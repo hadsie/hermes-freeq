@@ -1,0 +1,79 @@
+name: freeq
+label: Freeq
+kind: platform
+version: 1.0.0
+description: >
+  Freeq gateway adapter (https://github.com/freeq-irc/freeq): IRC with
+  AT Protocol identity. Extends the bundled IRC platform adapter with
+  ATPROTO-CHALLENGE SASL login (pds-session method via an atproto app
+  password), IRCv3 message-tag parsing, and rich media. Inbound
+  +freeq.at/media-* attachments are downloaded into the local media cache
+  for vision; outbound images and files are uploaded to the account's PDS
+  (uploadBlob + a blue.irc.media pin record) and sent as tagged messages.
+author: Scott Hadfield
+requires_env:
+  - name: FREEQ_SERVER
+    description: "Freeq server hostname (e.g. irc.example.org)"
+    prompt: "Freeq server"
+    password: false
+  - name: FREEQ_CHANNEL
+    description: "Channel to join (e.g. #general — comma-separate for multiple)"
+    prompt: "Freeq channel"
+    password: false
+  - name: FREEQ_NICKNAME
+    description: "Bot nickname on the freeq server"
+    prompt: "Bot nickname"
+    password: false
+optional_env:
+  - name: FREEQ_PORT
+    description: "Server port (default: 6697)"
+    prompt: "Freeq port"
+    password: false
+  - name: FREEQ_USE_TLS
+    description: "Use TLS for the connection (default: true)"
+    prompt: "Use TLS? (true/false)"
+    password: false
+  - name: FREEQ_TLS_SERVER_NAME
+    description: "TLS SNI / certificate hostname when connecting by IP"
+    prompt: "TLS server name (optional)"
+    password: false
+  - name: FREEQ_ATPROTO_HANDLE
+    description: "atproto handle of the BOT's account, used for SASL login and media uploads (leave unset for guest mode)"
+    prompt: "atproto handle (optional)"
+    password: false
+  - name: FREEQ_ATPROTO_APP_PASSWORD
+    description: "App password for the bot's atproto account (not the main password)"
+    prompt: "atproto app password (optional)"
+    password: true
+  - name: FREEQ_ATPROTO_PDS_URL
+    description: "PDS base URL; must exactly match the PDS endpoint in the bot's DID document (default https://bsky.social)"
+    prompt: "PDS URL (optional)"
+    password: false
+  - name: FREEQ_ALLOWED_USERS
+    description: "Comma-separated atproto DIDs allowed to talk to the bot (matched against the sender's account tag; nicks only match unauthenticated guests)"
+    prompt: "Allowed DIDs (comma-separated)"
+    password: false
+  - name: FREEQ_ALLOW_ALL_USERS
+    description: "Allow anyone in the channel to talk to the bot"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: FREEQ_HOME_CHANNEL
+    description: "Channel for cron / notification delivery (defaults to FREEQ_CHANNEL)"
+    prompt: "Home channel (or empty)"
+    password: false
+  - name: FREEQ_SIGN_MESSAGES
+    description: "Sign outbound messages/reactions with a session ed25519 key registered via MSGSIG (requires atproto SASL auth, default: true)"
+    prompt: "Sign messages? (true/false)"
+    password: false
+  - name: FREEQ_REACTIONS
+    description: "Lifecycle reactions on handled messages (in-progress/success/failure marks, default: true)"
+    prompt: "Enable reactions? (true/false)"
+    password: false
+  - name: FREEQ_MEDIA_UPLOADS
+    description: "Outbound media policy: 'pds' uploads to the account's PDS (PUBLIC atproto blob storage), 'off' withholds attachments (default: pds)"
+    prompt: "Media uploads (pds/off)"
+    password: false
+  - name: FREEQ_MEDIA_MAX_BYTES
+    description: "Max media size for uploads and downloads in bytes (default: 33554432)"
+    prompt: "Media size limit (optional)"
+    password: false
