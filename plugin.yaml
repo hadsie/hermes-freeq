@@ -61,6 +61,10 @@ optional_env:
     description: "Channel for cron / notification delivery (defaults to FREEQ_CHANNEL)"
     prompt: "Home channel (or empty)"
     password: false
+  - name: FREEQ_AGENT_REGISTER
+    description: "Register the connection as an agent (AGENT REGISTER class=agent) and publish presence updates (default: true)"
+    prompt: "Register as agent? (true/false)"
+    password: false
   - name: FREEQ_SIGN_MESSAGES
     description: "Sign outbound messages/reactions with a session ed25519 key registered via MSGSIG (requires atproto SASL auth, default: true)"
     prompt: "Sign messages? (true/false)"

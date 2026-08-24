@@ -484,7 +484,10 @@ class TestReactions:
         )
         event = MessageEvent(text="hi", source=source, message_id="srv-7")
         await adapter.on_processing_start(event)
-        assert adapter._send_raw.lines == ["@+react=\U0001f440;+reply=srv-7 TAGMSG #general"]
+        assert adapter._send_raw.lines == [
+            "@+react=\U0001f440;+reply=srv-7 TAGMSG #general",
+            "PRESENCE :state=executing",
+        ]
 
     async def test_inbound_reaction_reaches_handler(self):
         adapter = self._connected(make_adapter())
@@ -619,6 +622,43 @@ class TestMessageSigning:
         )
         assert adapter._msgsig_ready is False
         assert adapter._msgsig_event.is_set()
+
+
+class TestAgentPresence:
+
+    def _connected(self, adapter):
+        adapter._send_raw = CaptureRaw()
+        adapter._writer = type("W", (), {"is_closing": lambda self: False})()
+        return adapter
+
+    async def test_send_presence_format(self):
+        adapter = self._connected(make_adapter())
+        await adapter._send_presence("executing", status="running tests")
+        assert adapter._send_raw.lines == ["PRESENCE :state=executing;status=running tests"]
+
+    async def test_presence_disabled_when_agent_register_off(self):
+        adapter = self._connected(make_adapter(agent_register=False))
+        await adapter._send_presence("online")
+        assert adapter._send_raw.lines == []
+
+    async def test_processing_lifecycle_updates_presence(self):
+        adapter = self._connected(make_adapter(reactions=False))
+        source = adapter.build_source(
+            chat_id="#general", chat_name="#general", chat_type="group",
+            user_id="did:plc:x", user_name="alice",
+        )
+        event = MessageEvent(text="hi", source=source, message_id="srv-1")
+        await adapter.on_processing_start(event)
+        assert adapter._send_raw.lines == ["PRESENCE :state=executing"]
+
+    async def test_typing_pause_maps_to_waiting_for_input(self):
+        adapter = self._connected(make_adapter())
+        adapter._loop = asyncio.get_running_loop()
+        adapter.pause_typing_for_chat("#general")
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert adapter._send_raw.lines == ["PRESENCE :state=waiting_for_input"]
+        assert "#general" in adapter._typing_paused
 
 
 class TestKeepalive:

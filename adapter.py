@@ -408,6 +408,13 @@ class FreeqAdapter(IRCAdapter):
             if reactions_env
             else bool(extra.get("reactions", True))
         )
+        agent_env = os.getenv("FREEQ_AGENT_REGISTER", "").lower()
+        self._agent_register = (
+            agent_env in {"1", "true", "yes"}
+            if agent_env
+            else bool(extra.get("agent_register", True))
+        )
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
         sign_env = os.getenv("FREEQ_SIGN_MESSAGES", "").lower()
         self._signing_flag = (
             sign_env in {"1", "true", "yes"}
@@ -505,6 +512,13 @@ class FreeqAdapter(IRCAdapter):
         await self._send_raw(f"JOIN {self.channel}")
         self._mark_connected()
         self._keepalive_task = asyncio.create_task(self._keepalive_loop())
+
+        # Tell freeq we're an agent. Shows in WHOIS and member lists, and
+        # unlocks structured presence updates.
+        self._loop = asyncio.get_running_loop()
+        if self._agent_register:
+            await self._send_raw("AGENT REGISTER class=agent")
+            await self._send_presence("online")
         logger.info(
             "freeq: connected to %s:%s as %s (did=%s), joined %s",
             self.server, self.port, self._current_nick,
@@ -979,12 +993,48 @@ class FreeqAdapter(IRCAdapter):
 
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Mark the triggering message with the in-progress reaction."""
-        if not self._reactions_flag:
+        if self._reactions_flag:
+            chat_id = getattr(event.source, "chat_id", None)
+            message_id = getattr(event, "message_id", None)
+            if chat_id and message_id:
+                await self._add_reaction(chat_id, message_id, self._ACK_EMOJI)
+        await self._send_presence("executing")
+
+    async def on_processing_complete(self, event: MessageEvent, outcome) -> None:
+        """Swap the lifecycle reaction (base behavior), then go back to online."""
+        await super().on_processing_complete(event, outcome)
+        await self._send_presence("online")
+
+    # ── Agent presence ────────────────────────────────────────────────────
+
+    async def _send_presence(self, state: str, status: Optional[str] = None) -> None:
+        """Broadcast a structured agent presence update, best effort."""
+        if not self._agent_register or not self._writer or self._writer.is_closing():
             return
-        chat_id = getattr(event.source, "chat_id", None)
-        message_id = getattr(event, "message_id", None)
-        if chat_id and message_id:
-            await self._add_reaction(chat_id, message_id, self._ACK_EMOJI)
+        payload = f"state={state}"
+        if status:
+            payload += f";status={status}"
+        try:
+            await self._send_raw(f"PRESENCE :{payload}")
+        except (OSError, ConnectionError) as e:
+            logger.debug("freeq: presence update failed: %s", e)
+
+    def _schedule_presence(self, state: str) -> None:
+        """Fire-and-forget presence update, safe to call from sync hooks."""
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        loop.call_soon_threadsafe(lambda: loop.create_task(self._send_presence(state)))
+
+    def pause_typing_for_chat(self, chat_id: str) -> None:
+        """The gateway pauses typing while waiting on the user (approvals,
+        clarify questions); reflect that in agent presence too."""
+        super().pause_typing_for_chat(chat_id)
+        self._schedule_presence("waiting_for_input")
+
+    def resume_typing_for_chat(self, chat_id: str) -> None:
+        super().resume_typing_for_chat(chat_id)
+        self._schedule_presence("executing")
 
     async def _handle_tagmsg(self, msg: dict, tags: Dict[str, str], target: str) -> None:
         """Forward inbound reaction TAGMSGs to the gateway's reaction hook.
