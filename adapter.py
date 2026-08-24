@@ -415,6 +415,16 @@ class FreeqAdapter(IRCAdapter):
             else bool(extra.get("agent_register", True))
         )
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        # DIDs allowed to pause/resume/revoke this agent (freeq governance
+        # signals). Same population as the message allowlist.
+        allowed_raw = os.getenv("FREEQ_ALLOWED_USERS", "") or ",".join(
+            u for u in extra.get("allowed_users", []) if isinstance(u, str)
+        )
+        self._governance_dids = {
+            entry.strip() for entry in allowed_raw.split(",") if entry.strip().startswith("did:")
+        }
+        self._governance_paused = False
+        self._revoked = False
         sign_env = os.getenv("FREEQ_SIGN_MESSAGES", "").lower()
         self._signing_flag = (
             sign_env in {"1", "true", "yes"}
@@ -445,6 +455,14 @@ class FreeqAdapter(IRCAdapter):
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect, negotiate CAP + ATPROTO-CHALLENGE SASL, join channels."""
+        if self._revoked:
+            # AGENT REVOKE means stay down; a gateway restart clears it.
+            self._set_fatal_error(
+                "revoked",
+                "agent access revoked via freeq governance; restart the gateway to reconnect",
+                retryable=False,
+            )
+            return False
         if not self.server or not self.channel:
             logger.error("freeq: server and channel must be configured")
             self._set_fatal_error(
@@ -1036,6 +1054,38 @@ class FreeqAdapter(IRCAdapter):
         super().resume_typing_for_chat(chat_id)
         self._schedule_presence("executing")
 
+    async def _handle_governance(self, msg: dict, tags: Dict[str, str], action: str) -> None:
+        """Honor freeq governance signals (AGENT PAUSE/RESUME/REVOKE).
+
+        Governance tags are ordinary client tags, so anyone could forge one
+        in a direct TAGMSG. The gate is the issuer's DID: only DIDs on the
+        allowlist may govern this agent, however the signal arrived.
+        """
+        issuer_nick = tags.get("+freeq.at/issued-by") or _extract_nick(msg["prefix"])
+        issuer_did = tags.get("account") or self._nick_dids.get(issuer_nick.lower())
+        if not issuer_did or issuer_did not in self._governance_dids:
+            logger.warning(
+                "freeq: ignoring governance signal %r from unverified issuer %s (did=%s)",
+                action, issuer_nick, issuer_did or "unknown",
+            )
+            return
+        reason = tags.get("+freeq.at/reason") or ""
+        suffix = f" ({reason})" if reason else ""
+        if action == "pause":
+            self._governance_paused = True
+            logger.warning("freeq: paused by %s%s; ignoring messages until resumed", issuer_nick, suffix)
+            await self._send_presence("paused", status=reason or None)
+        elif action == "resume":
+            self._governance_paused = False
+            logger.warning("freeq: resumed by %s", issuer_nick)
+            await self._send_presence("online")
+        elif action == "revoke":
+            self._revoked = True
+            logger.error(
+                "freeq: access REVOKED by %s%s; staying offline until the gateway restarts",
+                issuer_nick, suffix,
+            )
+
     async def _handle_tagmsg(self, msg: dict, tags: Dict[str, str], target: str) -> None:
         """Forward inbound reaction TAGMSGs to the gateway's reaction hook.
 
@@ -1043,6 +1093,10 @@ class FreeqAdapter(IRCAdapter):
         """
         sender = _extract_nick(msg["prefix"])
         if sender.lower() == self._current_nick.lower():
+            return
+        governance = tags.get("+freeq.at/governance")
+        if governance:
+            await self._handle_governance(msg, tags, governance)
             return
         reaction = tags.get("+react")
         unreact = tags.get("+freeq.at/unreact")
@@ -1122,10 +1176,19 @@ class FreeqAdapter(IRCAdapter):
         self._pending_media = None
         self._pending_account = None
         self._pending_msgid = None
+        if self._governance_paused:
+            logger.info("freeq: paused via governance; dropping message from %s", user_name)
+            return
         if not self._message_handler:
             return
         if account:
             user_id = account
+        else:
+            # Some server paths (edit rebroadcasts, for one) don't stamp the
+            # account tag. Fall back to the DID we learned from this sender's
+            # stamped messages, so an edited message doesn't suddenly fail the
+            # DID allowlist under a bare nick.
+            user_id = self._nick_dids.get(user_id.lower(), user_id)
         # Legacy single-PRIVMSG multiline form: newlines arrive escaped.
         text = text.replace("\\n", "\n")
 

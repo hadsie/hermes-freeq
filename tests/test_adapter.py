@@ -338,6 +338,40 @@ class TestInboundMedia:
         )
         assert len(events) == 1
 
+    async def test_unstamped_message_falls_back_to_learned_did(self):
+        adapter = make_adapter()
+        adapter._message_handler = object()
+        events = []
+
+        async def capture(event):
+            events.append(event)
+
+        adapter.handle_message = capture
+        # A stamped message teaches the nick's DID; the server's edit
+        # rebroadcast then arrives without an account tag.
+        await adapter._handle_line(
+            "@account=did:plc:alicetestdid :alice!a@host PRIVMSG testbot :hi"
+        )
+        await adapter._handle_line(
+            "@+draft/edit=01ROOT0000000000000000000000;msgid=m2 "
+            ":alice!a@host PRIVMSG testbot :hi, edited"
+        )
+        assert len(events) == 2
+        assert events[1].user_id == "did:plc:alicetestdid"
+        assert events[1].text == "hi, edited"
+
+    async def test_unknown_unstamped_sender_keeps_nick(self):
+        adapter = make_adapter()
+        adapter._message_handler = object()
+        events = []
+
+        async def capture(event):
+            events.append(event)
+
+        adapter.handle_message = capture
+        await adapter._handle_line(":guestperson!g@host PRIVMSG testbot :hello")
+        assert events[0].user_id == "guestperson"
+
     async def test_account_tag_becomes_user_id_without_media(self):
         adapter = make_adapter()
         adapter._message_handler = object()
@@ -622,6 +656,74 @@ class TestMessageSigning:
         )
         assert adapter._msgsig_ready is False
         assert adapter._msgsig_event.is_set()
+
+
+class TestGovernance:
+
+    def _adapter(self):
+        adapter = make_adapter()
+        adapter._governance_dids = {"did:plc:ownerdid"}
+        adapter._send_raw = CaptureRaw()
+        adapter._writer = type("W", (), {"is_closing": lambda self: False})()
+        adapter._message_handler = object()
+        return adapter
+
+    def test_governance_dids_read_from_env(self, monkeypatch):
+        monkeypatch.setenv("FREEQ_ALLOWED_USERS", "did:plc:ownerdid, not-a-did")
+        adapter = make_adapter()
+        assert adapter._governance_dids == {"did:plc:ownerdid"}
+
+    async def _dispatchable(self, adapter):
+        events = []
+
+        async def capture(event):
+            events.append(event)
+
+        adapter.handle_message = capture
+        return events
+
+    async def test_pause_from_allowed_did_drops_messages(self):
+        adapter = self._adapter()
+        events = await self._dispatchable(adapter)
+        await adapter._handle_line(
+            "@+freeq.at/governance=pause;+freeq.at/issued-by=owner;account=did:plc:ownerdid "
+            ":owner!o@host TAGMSG testbot"
+        )
+        assert adapter._governance_paused is True
+        assert adapter._send_raw.lines == ["PRESENCE :state=paused"]
+
+        await adapter._handle_line(":alice!a@host PRIVMSG testbot :hello?")
+        assert events == []
+
+        await adapter._handle_line(
+            "@+freeq.at/governance=resume;account=did:plc:ownerdid :owner!o@host TAGMSG testbot"
+        )
+        assert adapter._governance_paused is False
+        await adapter._handle_line(":alice!a@host PRIVMSG testbot :hello again")
+        assert len(events) == 1
+
+    async def test_governance_from_unlisted_did_ignored(self):
+        adapter = self._adapter()
+        await adapter._handle_line(
+            "@+freeq.at/governance=pause;account=did:plc:strangerdid "
+            ":stranger!s@host TAGMSG testbot"
+        )
+        assert adapter._governance_paused is False
+
+    async def test_governance_without_resolvable_did_ignored(self):
+        adapter = self._adapter()
+        await adapter._handle_line(
+            "@+freeq.at/governance=pause;+freeq.at/issued-by=owner :owner!o@host TAGMSG testbot"
+        )
+        assert adapter._governance_paused is False
+
+    async def test_revoke_blocks_reconnect(self):
+        adapter = self._adapter()
+        await adapter._handle_line(
+            "@+freeq.at/governance=revoke;account=did:plc:ownerdid :owner!o@host TAGMSG testbot"
+        )
+        assert adapter._revoked is True
+        assert await adapter.connect() is False
 
 
 class TestAgentPresence:
