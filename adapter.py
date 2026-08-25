@@ -529,15 +529,16 @@ class FreeqAdapter(IRCAdapter):
 
         self._connected_at = time.time()
         self._last_rx = time.time()
-        await self._send_raw(self._join_line())
-        self._mark_connected()
-        self._keepalive_task = asyncio.create_task(self._keepalive_loop())
 
-        # Tell freeq we're an agent. Shows in WHOIS and member lists, and
-        # unlocks structured presence updates.
+        # Register as an agent before joining.
         self._loop = asyncio.get_running_loop()
         if self._agent_register:
             await self._send_raw("AGENT REGISTER class=agent")
+
+        await self._send_raw(self._join_line())
+        self._mark_connected()
+        self._keepalive_task = asyncio.create_task(self._keepalive_loop())
+        if self._agent_register:
             await self._send_presence("online")
         logger.info(
             "freeq: connected to %s:%s as %s (did=%s), joined %s",
