@@ -358,6 +358,8 @@ class FreeqAdapter(IRCAdapter):
             self.port = 6697
         self.nickname = os.getenv("FREEQ_NICKNAME") or extra.get("nickname", "hermes")
         self.channel = os.getenv("FREEQ_CHANNEL") or extra.get("channel", "")
+        # Comma-separate keys to match a comma-separated channel list.
+        self.channel_key = _get_scoped_secret("FREEQ_CHANNEL_KEY") or extra.get("channel_key", "")
         self.use_tls = (
             os.getenv("FREEQ_USE_TLS", "").lower() in {"1", "true", "yes"}
             if os.getenv("FREEQ_USE_TLS")
@@ -527,7 +529,7 @@ class FreeqAdapter(IRCAdapter):
 
         self._connected_at = time.time()
         self._last_rx = time.time()
-        await self._send_raw(f"JOIN {self.channel}")
+        await self._send_raw(self._join_line())
         self._mark_connected()
         self._keepalive_task = asyncio.create_task(self._keepalive_loop())
 
@@ -681,6 +683,12 @@ class FreeqAdapter(IRCAdapter):
         )
         return {EVENT_ID_TAG: eventid, SIG_TAG: self._signer.sign_document(doc)}
 
+    def _join_line(self) -> str:
+        """JOIN the channel and it's respective keys."""
+        if self.channel_key:
+            return f"JOIN {self.channel} {self.channel_key}"
+        return f"JOIN {self.channel}"
+
     # ── Line handling ─────────────────────────────────────────────────────
 
     async def _handle_line(self, raw: str) -> None:
@@ -723,6 +731,12 @@ class FreeqAdapter(IRCAdapter):
         if command == "FAIL" and params and params[0] == "MSGSIG":
             logger.warning("freeq: MSGSIG rejected: %s", params[-1] if params else "")
             self._msgsig_event.set()
+            return
+        if command == "475":  # ERR_BADCHANNELKEY
+            logger.error(
+                "freeq: cannot join %s — wrong or missing channel key (set FREEQ_CHANNEL_KEY)",
+                params[1] if len(params) > 1 else self.channel,
+            )
             return
 
         if command == "PRIVMSG" and len(params) >= 2:

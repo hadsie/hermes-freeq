@@ -658,6 +658,17 @@ class TestMessageSigning:
         assert adapter._msgsig_event.is_set()
 
 
+class TestChannelKey:
+
+    def test_join_line_without_key(self):
+        adapter = make_adapter()
+        assert adapter._join_line() == "JOIN #general"
+
+    def test_join_line_with_key(self):
+        adapter = make_adapter(channel_key="s3cret")
+        assert adapter._join_line() == "JOIN #general s3cret"
+
+
 class TestGovernance:
 
     def _adapter(self):

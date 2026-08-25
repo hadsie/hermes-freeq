@@ -25,6 +25,10 @@ requires_env:
     prompt: "Bot nickname"
     password: false
 optional_env:
+  - name: FREEQ_CHANNEL_KEY
+    description: "Key for +k channels (comma-separate to match a comma-separated FREEQ_CHANNEL list)"
+    prompt: "Channel key (optional)"
+    password: true
   - name: FREEQ_PORT
     description: "Server port (default: 6697)"
     prompt: "Freeq port"
