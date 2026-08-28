@@ -78,8 +78,12 @@ optional_env:
     prompt: "Enable reactions? (true/false)"
     password: false
   - name: FREEQ_MEDIA_UPLOADS
-    description: "Outbound media policy: 'pds' uploads to the account's PDS (PUBLIC atproto blob storage), 'off' withholds attachments (default: pds)"
-    prompt: "Media uploads (pds/off)"
+    description: "Outbound media policy: 'private' uploads to the freeq server's private media store (default; requires FREEQ_WEB_URL), 'pds' uploads to the account's PUBLIC atproto blob storage, 'off' withholds attachments"
+    prompt: "Media uploads (private/pds/off)"
+    password: false
+  - name: FREEQ_WEB_URL
+    description: "Public web origin of the freeq server (e.g. https://irc.example.org), required for private media uploads"
+    prompt: "freeq web URL (optional)"
     password: false
   - name: FREEQ_MEDIA_MAX_BYTES
     description: "Max media size for uploads and downloads in bytes (default: 33554432)"

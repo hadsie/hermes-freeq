@@ -446,8 +446,9 @@ class FreeqAdapter(IRCAdapter):
         except (ValueError, TypeError):
             self._media_max_bytes = _DEFAULT_MEDIA_MAX_BYTES
         self._media_uploads = (
-            os.getenv("FREEQ_MEDIA_UPLOADS") or str(extra.get("media_uploads", "pds"))
+            os.getenv("FREEQ_MEDIA_UPLOADS") or str(extra.get("media_uploads", "private"))
         ).lower()
+        self._web_url = (os.getenv("FREEQ_WEB_URL") or extra.get("web_url", "")).rstrip("/")
 
     @property
     def name(self) -> str:
@@ -1204,6 +1205,11 @@ class FreeqAdapter(IRCAdapter):
             # stamped messages, so an edited message doesn't suddenly fail the
             # DID allowlist under a bare nick.
             user_id = self._nick_dids.get(user_id.lower(), user_id)
+        # IRC clients swallow "/"-prefixed input as their own commands, so
+        # hermes commands are typed with the IRC-bot-conventional "!" here.
+        stripped = text.lstrip()
+        if stripped.startswith("!") and len(stripped) > 1 and stripped[1].isalpha():
+            text = "/" + stripped[1:]
         # Legacy single-PRIVMSG multiline form: newlines arrive escaped.
         text = text.replace("\\n", "\n")
 
@@ -1280,6 +1286,28 @@ class FreeqAdapter(IRCAdapter):
             url = f"{pds_url}/xrpc/com.atproto.sync.getBlob?did={did}&cid={cid}"
         return {"url": url, "cid": cid, "size": size, "mime": mime}
 
+    async def _upload_private(
+        self,
+        data: bytes,
+        mime: str,
+        alt: Optional[str],
+        channel: Optional[str],
+        filename: Optional[str],
+    ) -> Dict[str, Any]:
+        """Upload to the freeq server's private media store."""
+        form = {"did": self._atproto.did}
+        if alt:
+            form["alt"] = alt
+        if channel:
+            form["channel"] = channel
+        files = {"file": (filename or "upload", data, mime)}
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post(f"{self._web_url}/api/v1/upload", data=form, files=files)
+        if resp.status_code != 200:
+            raise RuntimeError(f"private upload failed ({resp.status_code}): {resp.text[:200]}")
+        body = resp.json()
+        return {"url": body["url"], "size": int(body.get("size", len(data))), "mime": body.get("content_type", mime)}
+
     async def _send_tagged(self, target: str, tags: Dict[str, str], body: str) -> SendResult:
         """Send a single PRIVMSG with an IRCv3 tag block."""
         if not self._writer or self._writer.is_closing():
@@ -1300,24 +1328,35 @@ class FreeqAdapter(IRCAdapter):
         caption: Optional[str],
         filename: Optional[str] = None,
     ) -> SendResult:
-        """Upload media to the PDS and deliver it as a tagged PRIVMSG."""
+        """Upload media (private store or PDS) and deliver it as a tagged PRIVMSG."""
+        withheld = None
         if self._media_uploads == "off":
-            notice = "[attachment withheld: media uploads are disabled on this platform]"
-            if caption:
-                notice = f"{caption}\n{notice}"
-            return await self.send(chat_id, notice)
-        if not self._atproto.configured:
+            withheld = "[attachment withheld: media uploads are disabled on this platform]"
+        elif self._media_uploads == "private" and not self._web_url:
+            logger.warning("freeq: private media uploads need FREEQ_WEB_URL; withholding attachment")
+            withheld = "[attachment withheld: private media uploads are not configured]"
+        elif self._media_uploads == "private" and not self._atproto.did:
+            logger.warning("freeq: private media uploads need an authenticated DID; withholding attachment")
+            withheld = "[attachment withheld: media uploads require an authenticated account]"
+        elif self._media_uploads == "pds" and not self._atproto.configured:
             return SendResult(
                 success=False,
                 error="Freeq media requires atproto credentials (FREEQ_ATPROTO_HANDLE / FREEQ_ATPROTO_APP_PASSWORD)",
             )
+        if withheld:
+            if caption:
+                withheld = f"{caption}\n{withheld}"
+            return await self.send(chat_id, withheld)
         if len(data) > self._media_max_bytes:
             return SendResult(success=False, error=f"file exceeds media size limit ({self._media_max_bytes} bytes)")
         try:
-            upload = await self._upload_to_pds(data, mime, caption, chat_id)
+            if self._media_uploads == "private":
+                upload = await self._upload_private(data, mime, caption, chat_id, filename)
+            else:
+                upload = await self._upload_to_pds(data, mime, caption, chat_id)
         except (httpx.HTTPError, RuntimeError, KeyError, ValueError) as e:
-            logger.error("freeq: PDS media upload failed: %s", e)
-            return SendResult(success=False, error=f"PDS upload failed: {e}")
+            logger.error("freeq: media upload failed: %s", e)
+            return SendResult(success=False, error=f"media upload failed: {e}")
 
         tags = {
             _TAG_PREFIX + "media-mime": upload["mime"],

@@ -9,8 +9,9 @@ Connects your [Hermes Agent](https://github.com/NousResearch/hermes-agent) to a 
 - Message signing with a persistent session ed25519 key.
 - Media support
   - Attachments are downloaded for vision.
-  - Outbound files are uploaded to the PDS and sent as rich attachments.
-  - Note: media is added to blob storage in the `blue.irc.media` record, so this is public data. Set `FREEQ_MEDIA_UPLOADS=off` to prevent any outbound attachments.
+  - Uploads default to the freeq server's private media store.
+  - Set `FREEQ_MEDIA_UPLOADS=pds` to upload to the account's PDS instead.
+- Hermes slash commands are typed with `!` (`!help`, `!status`), since IRC clients reserve `/` for their own commands.
 - Tool progress / working status output are consolidated in a single message using edits.
 - Support for reactions, outbound (in progress, success, failure) and inbound (forwarded to the gateway's reaction hooks).
 - Typing indicators.
@@ -21,12 +22,12 @@ Connects your [Hermes Agent](https://github.com/NousResearch/hermes-agent) to a 
 
 Compared to the more mature Hermes gateway integrations (Matrix, Discord, Slack):
 
-- Offline DM catch-up / CHATHISTORY.
+- Offline DM catch-up: the server persists DMs sent while the agent is offline, but the adapter does not yet pull them via CHATHISTORY on reconnect.
 - Inbound reply context: replies don't get the quoted-message text, so some context is assumed.
 - Out-of-process cron delivery: cron jobs require the gateway process to be running.
-- End-to-end encrypted DMs: the adapter uses plaintext PRIVMSG only.
-- Native interactive prompts: approvals and clarify questions render as text rather than reaction-driven pickers
-- Message deletion
+- End-to-end encrypted chat: message text is plaintext PRIVMSG on the wire.
+- Native interactive prompts: approvals and clarify questions render as text rather than reaction-driven pickers.
+- Message deletion.
 
 ## Attribution
 

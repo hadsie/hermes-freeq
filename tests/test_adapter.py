@@ -372,6 +372,24 @@ class TestInboundMedia:
         await adapter._handle_line(":guestperson!g@host PRIVMSG testbot :hello")
         assert events[0].user_id == "guestperson"
 
+    async def test_bang_prefix_becomes_slash_command(self):
+        adapter = make_adapter()
+        adapter._message_handler = object()
+        events = []
+
+        async def capture(event):
+            events.append(event)
+
+        adapter.handle_message = capture
+        await adapter._handle_line(":alice!a@host PRIVMSG testbot :!help")
+        await adapter._handle_line(":alice!a@host PRIVMSG testbot :!status now")
+        await adapter._handle_line(":alice!a@host PRIVMSG testbot :!!excited text")
+        await adapter._handle_line(":alice!a@host PRIVMSG #general :testbot: !new")
+
+        assert [e.text for e in events] == ["/help", "/status now", "!!excited text", "/new"]
+        assert events[0].is_command()
+        assert not events[2].is_command()
+
     async def test_account_tag_becomes_user_id_without_media(self):
         adapter = make_adapter()
         adapter._message_handler = object()
@@ -558,7 +576,7 @@ class TestMessageSigning:
 
     def _signed_adapter(self):
         from freeq_plugin.signing import ChatSigner
-        adapter = make_adapter()
+        adapter = make_adapter(media_uploads="pds")
         adapter._send_raw = CaptureRaw()
         adapter._writer = type("W", (), {"is_closing": lambda self: False})()
         adapter._atproto._did = "did:plc:botdid"
@@ -841,7 +859,7 @@ class TestTypingIndicator:
 class TestOutboundMedia:
 
     async def test_send_media_builds_tagged_privmsg(self):
-        adapter = make_adapter()
+        adapter = make_adapter(media_uploads="pds")
         adapter._send_raw = CaptureRaw()
         adapter._writer = type("W", (), {"is_closing": lambda self: False})()
 
@@ -862,6 +880,49 @@ class TestOutboundMedia:
         assert tags["+freeq.at/media-alt"] == "a cat"
         assert tags["+freeq.at/media-filename"] == "cat.jpg"
         assert rest == "PRIVMSG #general :a cat https://cdn.bsky.app/img/y.jpeg"
+
+    async def test_private_upload_posts_to_server_and_sends_tags(self, monkeypatch):
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.url == "https://irc.example.org/api/v1/upload"
+            body = request.read()
+            assert b"did:plc:botdid" in body
+            assert b"secret bytes" in body
+            return httpx.Response(200, json={
+                "url": "https://irc.example.org/api/v1/media/abc/sig/report.pdf",
+                "content_type": "application/pdf",
+                "size": 12,
+                "private": True,
+            })
+
+        monkeypatch.setattr(freeq.httpx, "AsyncClient", _mock_async_client(handler))
+        adapter = make_adapter(media_uploads="private", web_url="https://irc.example.org")
+        adapter._send_raw = CaptureRaw()
+        adapter._writer = type("W", (), {"is_closing": lambda self: False})()
+        adapter._atproto._did = "did:plc:botdid"
+
+        result = await adapter._send_media("#general", b"secret bytes", "application/pdf", "q3 report", "report.pdf")
+        assert result.success is True
+        tags = _parse_message_tags(adapter._send_raw.lines[0][1:].split(" ", 1)[0])
+        assert tags["+freeq.at/media-url"] == "https://irc.example.org/api/v1/media/abc/sig/report.pdf"
+        assert tags["+freeq.at/media-mime"] == "application/pdf"
+
+    async def test_private_mode_without_web_url_withholds(self):
+        adapter = make_adapter(media_uploads="private", web_url="")
+        adapter._send_raw = CaptureRaw()
+        adapter._writer = type("W", (), {"is_closing": lambda self: False})()
+        adapter._atproto._did = "did:plc:botdid"
+        result = await adapter._send_media("#general", b"data", "image/png", None)
+        assert result.success is True
+        assert "attachment withheld" in adapter._send_raw.lines[0]
+
+    async def test_private_mode_without_did_withholds(self):
+        adapter = make_adapter(media_uploads="private", web_url="https://irc.example.org",
+                               atproto_handle="", atproto_app_password="")
+        adapter._send_raw = CaptureRaw()
+        adapter._writer = type("W", (), {"is_closing": lambda self: False})()
+        result = await adapter._send_media("#general", b"data", "image/png", None)
+        assert result.success is True
+        assert "attachment withheld" in adapter._send_raw.lines[0]
 
     async def test_media_uploads_off_withholds_attachment(self):
         adapter = make_adapter(media_uploads="off")
@@ -884,13 +945,13 @@ class TestOutboundMedia:
         assert "media-url" not in line
 
     async def test_send_media_without_creds_fails(self):
-        adapter = make_adapter(atproto_handle="", atproto_app_password="")
+        adapter = make_adapter(media_uploads="pds", atproto_handle="", atproto_app_password="")
         result = await adapter._send_media("#general", b"data", "image/png", None)
         assert result.success is False
         assert "atproto credentials" in result.error
 
     async def test_send_media_over_size_limit_fails(self):
-        adapter = make_adapter(media_max_bytes=4)
+        adapter = make_adapter(media_uploads="pds", media_max_bytes=4)
         result = await adapter._send_media("#general", b"too big", "image/png", None)
         assert result.success is False
         assert "size limit" in result.error
