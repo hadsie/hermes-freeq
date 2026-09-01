@@ -71,6 +71,7 @@ logger = logging.getLogger(__name__)
 
 _TAG_PREFIX = "+freeq.at/"
 _DEFAULT_MEDIA_MAX_BYTES = 32 * 1024 * 1024
+_MAX_BATCH_LINES = 200
 
 
 # ---------------------------------------------------------------------------
@@ -404,6 +405,7 @@ class FreeqAdapter(IRCAdapter):
         self._echo_waiters: List[Tuple[str, str, asyncio.Future]] = []
         self._pending_msgid: Optional[str] = None
         self._own_reactions: Dict[Tuple[str, str], str] = {}
+        self._batches: Dict[str, Dict[str, Any]] = {}
         reactions_env = os.getenv("FREEQ_REACTIONS", "").lower()
         self._reactions_flag = (
             reactions_env in {"1", "true", "yes"}
@@ -550,6 +552,7 @@ class FreeqAdapter(IRCAdapter):
         return True
 
     async def disconnect(self) -> None:
+        self._batches.clear()
         if self._keepalive_task and not self._keepalive_task.done():
             self._keepalive_task.cancel()
             try:
@@ -741,6 +744,10 @@ class FreeqAdapter(IRCAdapter):
             )
             return
 
+        if command == "BATCH" and params:
+            await self._handle_batch(msg, tags, params)
+            return
+
         if command == "PRIVMSG" and len(params) >= 2:
             target, text = params[0], params[1]
             is_channel = target.startswith(("#", "&"))
@@ -749,6 +756,17 @@ class FreeqAdapter(IRCAdapter):
             sender = _extract_nick(msg["prefix"])
             if sender.lower() == self._current_nick.lower():
                 self._resolve_echo(target, text, tags.get("msgid"))
+                return
+
+            # A chunk of a multi-line message: collect it and wait for the
+            # closing BATCH.
+            batch = self._batches.get(tags.get("batch", ""))
+            if batch is not None:
+                if len(batch["lines"]) < _MAX_BATCH_LINES:
+                    batch["lines"].append((text, "draft/multiline-concat" in tags))
+                for key in ("account", "msgid", "time"):
+                    if key in tags and key not in batch["tags"]:
+                        batch["tags"][key] = tags[key]
                 return
             # Remember the sender's DID so DM signatures can name both parties.
             if tags.get("account"):
@@ -779,6 +797,47 @@ class FreeqAdapter(IRCAdapter):
             self._pending_account = None
             self._pending_msgid = None
 
+    async def _handle_batch(self, msg: dict, tags: Dict[str, str], params: List[str]) -> None:
+        """Track draft/multiline BATCHes so their chunks arrive as one message.
+
+        freeq splits a multi-paragraph message into one PRIVMSG per line
+        inside a BATCH.
+        """
+        ref = params[0]
+        if ref.startswith("+"):
+            if (params[1] if len(params) > 1 else "") == "draft/multiline":
+                self._batches[ref[1:]] = {
+                    "prefix": msg["prefix"],
+                    "target": params[2] if len(params) > 2 else "",
+                    "tags": dict(tags),
+                    "lines": [],
+                }
+            return
+        if ref.startswith("-"):
+            batch = self._batches.pop(ref[1:], None)
+            if batch and batch["lines"]:
+                await self._dispatch_batch(batch)
+
+    async def _dispatch_batch(self, batch: Dict[str, Any]) -> None:
+        """Reassemble a finished multiline batch and feed it through as one line."""
+        assembled = ""
+        for index, (body, concat) in enumerate(batch["lines"]):
+            if index and not concat:
+                assembled += "\n"
+            assembled += body
+
+        tags = {k: v for k, v in batch["tags"].items() if k != "batch"}
+        parts = []
+        if tags:
+            parts.append("@" + ";".join(
+                f"{k}={_escape_tag_value(v)}" if v else k for k, v in tags.items()
+            ))
+        if batch["prefix"]:
+            parts.append(f":{batch['prefix']}")
+        # Escape the newlines and send it back through the normal path.
+        parts.append(f"PRIVMSG {batch['target']} :{assembled.replace(chr(10), chr(92) + 'n')}")
+        await self._handle_line(" ".join(parts))
+
     async def _handle_cap(self, params: List[str]) -> None:
         """CAP negotiation: request sasl + message tags, then authenticate."""
         sub = params[1].upper() if len(params) > 1 else ""
@@ -799,6 +858,8 @@ class FreeqAdapter(IRCAdapter):
                     "account-tag",
                     "echo-message",
                     "freeq.at/msgsig",
+                    "batch",
+                    "draft/multiline",
                 )
                 if c in self._server_caps
             ]

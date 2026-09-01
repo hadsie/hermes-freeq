@@ -141,7 +141,9 @@ class TestCapSasl:
         await adapter._handle_line(
             ":srv CAP * LS :sasl=ATPROTO-CHALLENGE message-tags server-time account-tag batch"
         )
-        assert adapter._send_raw.lines == ["CAP REQ :sasl message-tags server-time account-tag"]
+        assert adapter._send_raw.lines == [
+            "CAP REQ :sasl message-tags server-time account-tag batch"
+        ]
 
     async def test_cap_ls_multiline_defers_req(self, adapter):
         await adapter._handle_line(":srv CAP * LS * :sasl message-tags")
@@ -371,6 +373,70 @@ class TestInboundMedia:
         adapter.handle_message = capture
         await adapter._handle_line(":guestperson!g@host PRIVMSG testbot :hello")
         assert events[0].user_id == "guestperson"
+
+    async def test_multiline_batch_dispatches_once(self):
+        adapter = make_adapter()
+        adapter._message_handler = object()
+        events = []
+
+        async def capture(event):
+            events.append(event)
+
+        adapter.handle_message = capture
+        await adapter._handle_line(
+            "@account=did:plc:alicetestdid;msgid=m1 :alice!a@host BATCH +xy draft/multiline testbot"
+        )
+        await adapter._handle_line("@batch=xy :alice!a@host PRIVMSG testbot :first para")
+        await adapter._handle_line("@batch=xy :alice!a@host PRIVMSG testbot :second para")
+        await adapter._handle_line("@batch=xy :alice!a@host PRIVMSG testbot :third para")
+        assert events == []
+
+        await adapter._handle_line(":alice!a@host BATCH -xy")
+        assert len(events) == 1
+        assert events[0].text == "first para\nsecond para\nthird para"
+        assert events[0].user_id == "did:plc:alicetestdid"
+        assert adapter._batches == {}
+
+    async def test_multiline_concat_joins_without_newline(self):
+        adapter = make_adapter()
+        adapter._message_handler = object()
+        events = []
+
+        async def capture(event):
+            events.append(event)
+
+        adapter.handle_message = capture
+        await adapter._handle_line(":alice!a@host BATCH +z draft/multiline testbot")
+        await adapter._handle_line("@batch=z :alice!a@host PRIVMSG testbot :one ")
+        await adapter._handle_line(
+            "@batch=z;draft/multiline-concat :alice!a@host PRIVMSG testbot :continued"
+        )
+        await adapter._handle_line(":alice!a@host BATCH -z")
+        assert events[0].text == "one continued"
+
+    async def test_non_multiline_batch_passes_chunks_through(self):
+        adapter = make_adapter()
+        adapter._message_handler = object()
+        events = []
+
+        async def capture(event):
+            events.append(event)
+
+        adapter.handle_message = capture
+        await adapter._handle_line(":srv BATCH +h chathistory testbot")
+        await adapter._handle_line("@batch=h :alice!a@host PRIVMSG testbot :old one")
+        await adapter._handle_line(":srv BATCH -h")
+        assert [e.text for e in events] == ["old one"]
+
+    async def test_batch_requests_multiline_caps(self):
+        adapter = make_adapter()
+        adapter._send_raw = CaptureRaw()
+        await adapter._handle_line(
+            ":srv CAP * LS :sasl message-tags batch draft/multiline=max-bytes=40000"
+        )
+        requested = adapter._send_raw.lines[0]
+        assert "batch" in requested
+        assert "draft/multiline" in requested
 
     async def test_bang_prefix_becomes_slash_command(self):
         adapter = make_adapter()
