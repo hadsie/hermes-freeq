@@ -32,6 +32,7 @@ import json
 import logging
 import mimetypes
 import os
+import re
 import ssl
 import time
 from dataclasses import dataclass
@@ -41,6 +42,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from agent.display import ToolPreview
 from gateway.config import Platform
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -938,6 +940,14 @@ class FreeqAdapter(IRCAdapter):
 
     def _discard_echo_waiter(self, fut: asyncio.Future) -> None:
         self._echo_waiters = [(t, x, f) for (t, x, f) in self._echo_waiters if f is not fut]
+
+    def format_tool_preview(self, preview: ToolPreview) -> str:
+        """Link a truncated preview to its full URL."""
+        if not preview.url:
+            return preview.text
+        label = re.sub(r"([\\\[\]])", r"\\\1", preview.text)
+        url = preview.url.replace("<", "%3C").replace(">", "%3E")
+        return f"[{label}](<{url}>)"
 
     async def send(
         self,

@@ -22,6 +22,7 @@ from freeq_plugin.adapter import (
     _AtprotoSession,
 )
 
+from agent.display import ToolPreview
 from gateway.config import PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType
 
@@ -494,6 +495,34 @@ class TestSendAndEdit:
         assert tags["+freeq.at/mime"] == "text/markdown"
         assert "+freeq.at/multiline" in tags
         assert rest == "PRIVMSG #general :**bold**\\nline two"
+
+    def test_tool_preview_links_truncated_url_to_full_url(self):
+        preview = ToolPreview(
+            text="https://www.canlii.org/en/bc/bcpc/doc...",
+            truncated=True,
+            url="https://www.canlii.org/en/bc/bcpc/doc/2024/2024bcpc1/2024bcpc1.html",
+        )
+        assert make_adapter().format_tool_preview(preview) == (
+            "[https://www.canlii.org/en/bc/bcpc/doc...]"
+            "(<https://www.canlii.org/en/bc/bcpc/doc/2024/2024bcpc1/2024bcpc1.html>)"
+        )
+
+    def test_tool_preview_without_url_is_plain_text(self):
+        preview = ToolPreview(text="ls -la /tmp")
+        assert make_adapter().format_tool_preview(preview) == "ls -la /tmp"
+
+    def test_tool_preview_escapes_brackets_in_label(self):
+        preview = ToolPreview(text="see [docs]...", truncated=True, url="https://x.example/a")
+        assert make_adapter().format_tool_preview(preview) == (
+            "[see \\[docs\\]...](<https://x.example/a>)"
+        )
+
+    def test_tool_preview_keeps_parens_in_url_inside_link(self):
+        preview = ToolPreview(text="https://en.wikipedia.org/...", truncated=True,
+                              url="https://en.wikipedia.org/wiki/Foo_(bar)")
+        assert make_adapter().format_tool_preview(preview).endswith(
+            "(<https://en.wikipedia.org/wiki/Foo_(bar)>)"
+        )
 
     async def test_send_captures_msgid_from_echo(self):
         adapter = self._connected(make_adapter())
