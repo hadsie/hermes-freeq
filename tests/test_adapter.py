@@ -23,6 +23,7 @@ from freeq_plugin.adapter import (
 )
 
 from agent.display import ToolPreview
+from agent.secret_scope import reset_secret_scope, set_secret_scope
 from gateway.config import PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType
 
@@ -780,6 +781,22 @@ class TestChannelKey:
     def test_join_line_with_key(self):
         adapter = make_adapter(channel_key="s3cret")
         assert adapter._join_line() == "JOIN #general s3cret"
+
+
+class TestProfileScope:
+
+    def test_settings_come_from_profile_scope_not_process_env(self, monkeypatch):
+        monkeypatch.setenv("FREEQ_NICKNAME", "clover")
+        monkeypatch.setenv("FREEQ_ATPROTO_HANDLE", "clover.example.com")
+        token = set_secret_scope({
+            "FREEQ_NICKNAME": "condoclerk",
+            "FREEQ_ATPROTO_HANDLE": "condoclerk.example.com",
+        })
+        try:
+            adapter = make_adapter()
+        finally:
+            reset_secret_scope(token)
+        assert (adapter.nickname, adapter._atproto.handle) == ("condoclerk", "condoclerk.example.com")
 
 
 class TestGovernance:

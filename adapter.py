@@ -354,24 +354,24 @@ class FreeqAdapter(IRCAdapter):
 
         extra = getattr(config, "extra", {}) or {}
 
-        self.server = os.getenv("FREEQ_SERVER") or extra.get("server", "")
+        self.server = _get_scoped_secret("FREEQ_SERVER") or extra.get("server", "")
         try:
-            self.port = int(os.getenv("FREEQ_PORT") or extra.get("port", 6697))
+            self.port = int(_get_scoped_secret("FREEQ_PORT") or extra.get("port", 6697))
         except (ValueError, TypeError):
             self.port = 6697
-        self.nickname = os.getenv("FREEQ_NICKNAME") or extra.get("nickname", "hermes")
-        self.channel = os.getenv("FREEQ_CHANNEL") or extra.get("channel", "")
+        self.nickname = _get_scoped_secret("FREEQ_NICKNAME") or extra.get("nickname", "hermes")
+        self.channel = _get_scoped_secret("FREEQ_CHANNEL") or extra.get("channel", "")
         # Comma-separate keys to match a comma-separated channel list.
         self.channel_key = _get_scoped_secret("FREEQ_CHANNEL_KEY") or extra.get("channel_key", "")
         self.use_tls = (
-            os.getenv("FREEQ_USE_TLS", "").lower() in {"1", "true", "yes"}
-            if os.getenv("FREEQ_USE_TLS")
+            _get_scoped_secret("FREEQ_USE_TLS", "").lower() in {"1", "true", "yes"}
+            if _get_scoped_secret("FREEQ_USE_TLS")
             else extra.get("use_tls", True)
         )
         # TLS SNI / verification hostname when it differs from the connect
         # address (e.g. connecting to a private VPN IP while the server's
         # certificate names the public hostname).
-        self.tls_server_name = os.getenv("FREEQ_TLS_SERVER_NAME") or extra.get("tls_server_name", "")
+        self.tls_server_name = _get_scoped_secret("FREEQ_TLS_SERVER_NAME") or extra.get("tls_server_name", "")
         # The IRC adapter expects these, but they're not used by freeq.
         self.server_password = ""
         self.nickserv_password = ""
@@ -390,10 +390,10 @@ class FreeqAdapter(IRCAdapter):
         self._registration_event = asyncio.Event()
 
         self._atproto = _AtprotoSession(
-            os.getenv("FREEQ_ATPROTO_HANDLE") or extra.get("atproto_handle", ""),
+            _get_scoped_secret("FREEQ_ATPROTO_HANDLE") or extra.get("atproto_handle", ""),
             _get_scoped_secret("FREEQ_ATPROTO_APP_PASSWORD")
             or extra.get("atproto_app_password", ""),
-            os.getenv("FREEQ_ATPROTO_PDS_URL") or extra.get("atproto_pds_url", ""),
+            _get_scoped_secret("FREEQ_ATPROTO_PDS_URL") or extra.get("atproto_pds_url", ""),
         )
         self._server_caps: set = set()
         self._sasl_failed: Optional[str] = None
@@ -408,13 +408,13 @@ class FreeqAdapter(IRCAdapter):
         self._pending_msgid: Optional[str] = None
         self._own_reactions: Dict[Tuple[str, str], str] = {}
         self._batches: Dict[str, Dict[str, Any]] = {}
-        reactions_env = os.getenv("FREEQ_REACTIONS", "").lower()
+        reactions_env = _get_scoped_secret("FREEQ_REACTIONS", "").lower()
         self._reactions_flag = (
             reactions_env in {"1", "true", "yes"}
             if reactions_env
             else bool(extra.get("reactions", True))
         )
-        agent_env = os.getenv("FREEQ_AGENT_REGISTER", "").lower()
+        agent_env = _get_scoped_secret("FREEQ_AGENT_REGISTER", "").lower()
         self._agent_register = (
             agent_env in {"1", "true", "yes"}
             if agent_env
@@ -423,7 +423,7 @@ class FreeqAdapter(IRCAdapter):
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         # DIDs allowed to pause/resume/revoke this agent (freeq governance
         # signals). Same population as the message allowlist.
-        allowed_raw = os.getenv("FREEQ_ALLOWED_USERS", "") or ",".join(
+        allowed_raw = _get_scoped_secret("FREEQ_ALLOWED_USERS", "") or ",".join(
             u for u in extra.get("allowed_users", []) if isinstance(u, str)
         )
         self._governance_dids = {
@@ -431,7 +431,7 @@ class FreeqAdapter(IRCAdapter):
         }
         self._governance_paused = False
         self._revoked = False
-        sign_env = os.getenv("FREEQ_SIGN_MESSAGES", "").lower()
+        sign_env = _get_scoped_secret("FREEQ_SIGN_MESSAGES", "").lower()
         self._signing_flag = (
             sign_env in {"1", "true", "yes"}
             if sign_env
@@ -444,15 +444,15 @@ class FreeqAdapter(IRCAdapter):
         self._nick_dids: Dict[str, str] = {}
         try:
             self._media_max_bytes = int(
-                os.getenv("FREEQ_MEDIA_MAX_BYTES")
+                _get_scoped_secret("FREEQ_MEDIA_MAX_BYTES")
                 or extra.get("media_max_bytes", _DEFAULT_MEDIA_MAX_BYTES)
             )
         except (ValueError, TypeError):
             self._media_max_bytes = _DEFAULT_MEDIA_MAX_BYTES
         self._media_uploads = (
-            os.getenv("FREEQ_MEDIA_UPLOADS") or str(extra.get("media_uploads", "private"))
+            _get_scoped_secret("FREEQ_MEDIA_UPLOADS") or str(extra.get("media_uploads", "private"))
         ).lower()
-        self._web_url = (os.getenv("FREEQ_WEB_URL") or extra.get("web_url", "")).rstrip("/")
+        self._web_url = (_get_scoped_secret("FREEQ_WEB_URL") or extra.get("web_url", "")).rstrip("/")
 
     @property
     def name(self) -> str:
@@ -1537,14 +1537,14 @@ class FreeqAdapter(IRCAdapter):
 
 def check_requirements() -> bool:
     """Check if freeq is configured via env vars."""
-    return bool(os.getenv("FREEQ_SERVER", "") and os.getenv("FREEQ_CHANNEL", ""))
+    return bool(_get_scoped_secret("FREEQ_SERVER", "") and _get_scoped_secret("FREEQ_CHANNEL", ""))
 
 
 def validate_config(config) -> bool:
     """Validate that the platform config has enough info to connect."""
     extra = getattr(config, "extra", {}) or {}
-    server = os.getenv("FREEQ_SERVER") or extra.get("server", "")
-    channel = os.getenv("FREEQ_CHANNEL") or extra.get("channel", "")
+    server = _get_scoped_secret("FREEQ_SERVER") or extra.get("server", "")
+    channel = _get_scoped_secret("FREEQ_CHANNEL") or extra.get("channel", "")
     return bool(server and channel)
 
 
@@ -1555,27 +1555,27 @@ def is_connected(config) -> bool:
 
 def _env_enablement() -> Optional[dict]:
     """Seed ``PlatformConfig.extra`` from env vars during gateway config load."""
-    server = os.getenv("FREEQ_SERVER", "").strip()
-    channel = os.getenv("FREEQ_CHANNEL", "").strip()
+    server = _get_scoped_secret("FREEQ_SERVER", "").strip()
+    channel = _get_scoped_secret("FREEQ_CHANNEL", "").strip()
     if not (server and channel):
         return None
     seed: dict = {"server": server, "channel": channel}
-    port = os.getenv("FREEQ_PORT", "").strip()
+    port = _get_scoped_secret("FREEQ_PORT", "").strip()
     if port:
         try:
             seed["port"] = int(port)
         except ValueError:
             pass
-    nickname = os.getenv("FREEQ_NICKNAME", "").strip()
+    nickname = _get_scoped_secret("FREEQ_NICKNAME", "").strip()
     if nickname:
         seed["nickname"] = nickname
-    use_tls = os.getenv("FREEQ_USE_TLS", "").strip().lower()
+    use_tls = _get_scoped_secret("FREEQ_USE_TLS", "").strip().lower()
     if use_tls:
         seed["use_tls"] = use_tls in {"1", "true", "yes"}
-    home = os.getenv("FREEQ_HOME_CHANNEL") or channel
+    home = _get_scoped_secret("FREEQ_HOME_CHANNEL") or channel
     seed["home_channel"] = {
         "chat_id": home,
-        "name": os.getenv("FREEQ_HOME_CHANNEL_NAME", home),
+        "name": _get_scoped_secret("FREEQ_HOME_CHANNEL_NAME", home),
     }
     return seed
 
