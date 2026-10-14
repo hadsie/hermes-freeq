@@ -288,6 +288,90 @@ class TestInboundMedia:
         assert events[0].text == "what time is it"
         assert events[0].source.chat_id == "#general"
 
+    async def test_mid_line_at_nick_dispatches_full_text(self):
+        adapter = make_adapter()
+        adapter._message_handler = object()
+        events = []
+
+        async def capture(event):
+            events.append(event)
+
+        adapter.handle_message = capture
+        await adapter._handle_line(":alice!a@host PRIVMSG #general :hi @TestBot, what time is it?")
+
+        assert len(events) == 1
+        assert events[0].text == "hi @TestBot, what time is it?"
+
+    async def test_reply_to_own_message_dispatches_in_channel(self):
+        adapter = make_adapter()
+        adapter._message_handler = object()
+        events = []
+
+        async def capture(event):
+            events.append(event)
+
+        adapter.handle_message = capture
+        await adapter._handle_line("@msgid=OURS1 :testbot!b@host PRIVMSG #general :it's 3pm")
+        await adapter._handle_line("@+reply=OURS1 :alice!a@host PRIVMSG #general :thanks, and tomorrow?")
+
+        assert len(events) == 1
+        assert events[0].text == "thanks, and tomorrow?"
+
+    async def test_reply_to_someone_elses_message_ignored(self):
+        adapter = make_adapter()
+        adapter._message_handler = object()
+        events = []
+
+        async def capture(event):
+            events.append(event)
+
+        adapter.handle_message = capture
+        await adapter._handle_line("@msgid=BOBS1 :bob!b@host PRIVMSG #general :lunch?")
+        await adapter._handle_line("@+reply=BOBS1 :alice!a@host PRIVMSG #general :sure")
+
+        assert events == []
+
+    async def test_at_mention_of_longer_nick_ignored(self):
+        adapter = make_adapter()
+        adapter._message_handler = object()
+        events = []
+
+        async def capture(event):
+            events.append(event)
+
+        adapter.handle_message = capture
+        await adapter._handle_line(":alice!a@host PRIVMSG #general :ask @testbot2 instead")
+        await adapter._handle_line(":alice!a@host PRIVMSG #general :mail bob@testbot.org")
+
+        assert events == []
+
+    async def test_action_mentioning_us_dispatches_as_action(self):
+        adapter = make_adapter()
+        adapter._message_handler = object()
+        events = []
+
+        async def capture(event):
+            events.append(event)
+
+        adapter.handle_message = capture
+        await adapter._handle_line(":alice!a@host PRIVMSG #general :\x01ACTION pokes @TestBot\x01")
+
+        assert len(events) == 1
+        assert events[0].text == "* alice pokes @TestBot"
+
+    async def test_mid_line_at_nick_from_disallowed_user_ignored(self):
+        adapter = make_adapter(allowed_users=["bob"])
+        adapter._message_handler = object()
+        events = []
+
+        async def capture(event):
+            events.append(event)
+
+        adapter.handle_message = capture
+        await adapter._handle_line(":alice!a@host PRIVMSG #general :hi @TestBot, what time is it?")
+
+        assert events == []
+
     async def test_unaddressed_channel_message_ignored(self):
         adapter = make_adapter()
         adapter._message_handler = object()

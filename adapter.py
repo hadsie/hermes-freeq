@@ -35,6 +35,7 @@ import os
 import re
 import ssl
 import time
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -405,6 +406,7 @@ class FreeqAdapter(IRCAdapter):
         self._keepalive_task: Optional[asyncio.Task] = None
         self._echo_enabled = False
         self._echo_waiters: List[Tuple[str, str, asyncio.Future]] = []
+        self._own_msgids: deque = deque(maxlen=1000)
         self._pending_msgid: Optional[str] = None
         self._own_reactions: Dict[Tuple[str, str], str] = {}
         self._batches: Dict[str, Dict[str, Any]] = {}
@@ -750,6 +752,7 @@ class FreeqAdapter(IRCAdapter):
             await self._handle_batch(msg, tags, params)
             return
 
+        addressed = False
         if command == "PRIVMSG" and len(params) >= 2:
             target, text = params[0], params[1]
             is_channel = target.startswith(("#", "&"))
@@ -757,6 +760,8 @@ class FreeqAdapter(IRCAdapter):
             # Our own echo: grab the msgid for edits, never re-process ourselves.
             sender = _extract_nick(msg["prefix"])
             if sender.lower() == self._current_nick.lower():
+                if tags.get("msgid"):
+                    self._own_msgids.append(tags["msgid"])
                 self._resolve_echo(target, text, tags.get("msgid"))
                 return
 
@@ -781,8 +786,13 @@ class FreeqAdapter(IRCAdapter):
                     return
 
             # Rewrite "@nick ..." to "nick ..." so the base addressing check matches.
+            # A reply to us, or an "@nick" later in the line, is dispatched directly.
             if is_channel and text.lower().startswith(f"@{self._current_nick.lower()}"):
                 raw = f":{msg['prefix']} PRIVMSG {target} :{text[1:]}"
+            elif is_channel:
+                addressed = tags.get("+reply") in self._own_msgids or bool(re.search(
+                    rf"(?<!\S)@{re.escape(self._current_nick)}(?![\w.-]*\w)", text, re.IGNORECASE
+                ))
 
             # Stash sender DID, msgid, and any media attachment for dispatch.
             if tags:
@@ -793,11 +803,27 @@ class FreeqAdapter(IRCAdapter):
                     self._pending_media = await self._cache_inbound_media(attachment)
 
         try:
-            await super()._handle_line(raw)
+            if addressed:
+                await self._dispatch_addressed(sender, target, text)
+            else:
+                await super()._handle_line(raw)
         finally:
             self._pending_media = None
             self._pending_account = None
             self._pending_msgid = None
+
+    async def _dispatch_addressed(self, sender: str, channel: str, text: str) -> None:
+        """Dispatch a channel message meant for us that the base "nick:" check would drop."""
+        if text.startswith("\x01ACTION ") and text.endswith("\x01"):
+            text = f"* {sender} {text[8:-1]}"
+        if text.startswith("\x01"):
+            return
+        if self._allowed_users_lower and sender.lower() not in self._allowed_users_lower:
+            logger.debug("freeq: ignoring message from unauthorized user %s", sender)
+            return
+        await self._dispatch_message(
+            text=text, chat_id=channel, chat_type="group", user_id=sender, user_name=sender
+        )
 
     async def _handle_batch(self, msg: dict, tags: Dict[str, str], params: List[str]) -> None:
         """Track draft/multiline BATCHes so their chunks arrive as one message.
