@@ -372,6 +372,53 @@ class TestInboundMedia:
 
         assert events == []
 
+    async def _answered_alice(self):
+        """An adapter that has just answered alice in #general, and the events it dispatched."""
+        adapter = make_adapter()
+        adapter._message_handler = object()
+        events = []
+
+        async def capture(event):
+            events.append(event)
+
+        adapter.handle_message = capture
+        await adapter._handle_line(":alice!a@host PRIVMSG #general :testbot: what time is it?")
+        await adapter._handle_line("@msgid=OURS1 :testbot!b@host PRIVMSG #general :it's 3pm")
+        return adapter, events
+
+    async def test_followup_from_person_we_answered_dispatches(self):
+        adapter, events = await self._answered_alice()
+        await adapter._handle_line(":alice!a@host PRIVMSG #general :and tomorrow?")
+
+        assert [e.text for e in events] == ["what time is it?", "and tomorrow?"]
+
+    async def test_followup_starting_with_nick_has_nick_stripped(self):
+        adapter, events = await self._answered_alice()
+        await adapter._handle_line(":alice!a@host PRIVMSG #general :testbot: and tomorrow?")
+
+        assert events[-1].text == "and tomorrow?"
+
+    async def test_followup_from_someone_else_ignored(self):
+        adapter, events = await self._answered_alice()
+        await adapter._handle_line(":bob!b@host PRIVMSG #general :and tomorrow?")
+
+        assert len(events) == 1
+
+    async def test_followup_after_someone_else_spoke_ignored(self):
+        adapter, events = await self._answered_alice()
+        await adapter._handle_line(":bob!b@host PRIVMSG #general :lunch?")
+        await adapter._handle_line(":alice!a@host PRIVMSG #general :sure")
+
+        assert len(events) == 1
+
+    async def test_followup_after_window_expires_ignored(self, monkeypatch):
+        adapter, events = await self._answered_alice()
+        later = freeq.time.time() + 301
+        monkeypatch.setattr(freeq.time, "time", lambda: later)
+        await adapter._handle_line(":alice!a@host PRIVMSG #general :and tomorrow?")
+
+        assert len(events) == 1
+
     async def test_unaddressed_channel_message_ignored(self):
         adapter = make_adapter()
         adapter._message_handler = object()

@@ -75,6 +75,8 @@ logger = logging.getLogger(__name__)
 _TAG_PREFIX = "+freeq.at/"
 _DEFAULT_MEDIA_MAX_BYTES = 32 * 1024 * 1024
 _MAX_BATCH_LINES = 200
+# Allow the bot to respond without an explicit @reply for this number of seconds.
+_FOLLOWUP_SECONDS = 300
 
 
 # ---------------------------------------------------------------------------
@@ -407,6 +409,9 @@ class FreeqAdapter(IRCAdapter):
         self._echo_enabled = False
         self._echo_waiters: List[Tuple[str, str, asyncio.Future]] = []
         self._own_msgids: deque = deque(maxlen=1000)
+        # Per channel: who the bot last answered, and their open follow-up window.
+        self._talking_to: Dict[str, str] = {}
+        self._followups: Dict[str, Tuple[str, float]] = {}
         self._pending_msgid: Optional[str] = None
         self._own_reactions: Dict[Tuple[str, str], str] = {}
         self._batches: Dict[str, Dict[str, Any]] = {}
@@ -536,6 +541,8 @@ class FreeqAdapter(IRCAdapter):
 
         self._connected_at = time.time()
         self._last_rx = time.time()
+        self._talking_to.clear()
+        self._followups.clear()
 
         # Register as an agent before joining.
         self._loop = asyncio.get_running_loop()
@@ -762,6 +769,8 @@ class FreeqAdapter(IRCAdapter):
             if sender.lower() == self._current_nick.lower():
                 if tags.get("msgid"):
                     self._own_msgids.append(tags["msgid"])
+                if target.lower() in self._talking_to:
+                    self._followups[target.lower()] = (self._talking_to[target.lower()], time.time())
                 self._resolve_echo(target, text, tags.get("msgid"))
                 return
 
@@ -785,13 +794,22 @@ class FreeqAdapter(IRCAdapter):
                 if ts is not None and ts < self._connected_at:
                     return
 
+            # Any message closes the follow-up window, so only the next one can use it.
+            window = self._followups.pop(target.lower(), None) if is_channel else None
+            followup = (
+                window is not None
+                and window[0] == sender.lower()
+                and time.time() - window[1] < _FOLLOWUP_SECONDS
+            )
+
             # Rewrite "@nick ..." to "nick ..." so the base addressing check matches.
-            # A reply to us, or an "@nick" later in the line, is dispatched directly.
+            # A reply to us, a follow-up, or an "@nick" later in the line is dispatched directly.
+            nick = re.escape(self._current_nick)
             if is_channel and text.lower().startswith(f"@{self._current_nick.lower()}"):
                 raw = f":{msg['prefix']} PRIVMSG {target} :{text[1:]}"
-            elif is_channel:
-                addressed = tags.get("+reply") in self._own_msgids or bool(re.search(
-                    rf"(?<!\S)@{re.escape(self._current_nick)}(?![\w.-]*\w)", text, re.IGNORECASE
+            elif is_channel and not re.match(rf"{nick}[:, ]", text, re.IGNORECASE):
+                addressed = followup or tags.get("+reply") in self._own_msgids or bool(re.search(
+                    rf"(?<!\S)@{nick}(?![\w.-]*\w)", text, re.IGNORECASE
                 ))
 
             # Stash sender DID, msgid, and any media attachment for dispatch.
@@ -1294,6 +1312,8 @@ class FreeqAdapter(IRCAdapter):
             return
         if not self._message_handler:
             return
+        if chat_type == "group":
+            self._talking_to[chat_id.lower()] = user_name.lower()
         if account:
             user_id = account
         else:
