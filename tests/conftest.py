@@ -62,6 +62,7 @@ def _clean_env(monkeypatch):
         "FREEQ_ALLOWED_USERS",
         "FREEQ_ALLOW_ALL_USERS",
         "FREEQ_HOME_CHANNEL",
+        "FREEQ_FREE_RESPONSE_CHANNELS",
         "FREEQ_MEDIA_MAX_BYTES",
         "ATPROTO_HANDLE",
         "ATPROTO_APP_PASSWORD",

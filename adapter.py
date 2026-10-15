@@ -20,7 +20,9 @@ Configuration (env vars, or ``gateway.platforms.freeq.extra`` in config.yaml):
 
     FREEQ_SERVER=irc.example.org
     FREEQ_PORT=6697
-    FREEQ_CHANNEL=#general
+    FREEQ_CHANNEL=#general,#agents        (FREEQ_CHANNEL_KEY: matching comma-separated keys)
+    FREEQ_HOME_CHANNEL=#general           (needed when FREEQ_CHANNEL lists several)
+    FREEQ_FREE_RESPONSE_CHANNELS=#agents  (answer every message there, not just mentions)
     FREEQ_NICKNAME=mybot
     FREEQ_ATPROTO_HANDLE / FREEQ_ATPROTO_APP_PASSWORD / FREEQ_ATPROTO_PDS_URL
 """
@@ -366,6 +368,11 @@ class FreeqAdapter(IRCAdapter):
         self.channel = _get_scoped_secret("FREEQ_CHANNEL") or extra.get("channel", "")
         # Comma-separate keys to match a comma-separated channel list.
         self.channel_key = _get_scoped_secret("FREEQ_CHANNEL_KEY") or extra.get("channel_key", "")
+        # Channels where every message is for us, not just replies and @mentions.
+        free = _get_scoped_secret("FREEQ_FREE_RESPONSE_CHANNELS") or extra.get("free_response_channels", "")
+        self._free_response_channels = {
+            c.strip().lower() for c in (free.split(",") if isinstance(free, str) else free) if c.strip()
+        }
         self.use_tls = (
             _get_scoped_secret("FREEQ_USE_TLS", "").lower() in {"1", "true", "yes"}
             if _get_scoped_secret("FREEQ_USE_TLS")
@@ -808,9 +815,12 @@ class FreeqAdapter(IRCAdapter):
             if is_channel and text.lower().startswith(f"@{self._current_nick.lower()}"):
                 raw = f":{msg['prefix']} PRIVMSG {target} :{text[1:]}"
             elif is_channel and not re.match(rf"{nick}[:, ]", text, re.IGNORECASE):
-                addressed = followup or tags.get("+reply") in self._own_msgids or bool(re.search(
-                    rf"(?<!\S)@{nick}(?![\w.-]*\w)", text, re.IGNORECASE
-                ))
+                addressed = (
+                    target.lower() in self._free_response_channels
+                    or followup
+                    or tags.get("+reply") in self._own_msgids
+                    or bool(re.search(rf"(?<!\S)@{nick}(?![\w.-]*\w)", text, re.IGNORECASE))
+                )
 
             # Stash sender DID, msgid, and any media attachment for dispatch.
             if tags:

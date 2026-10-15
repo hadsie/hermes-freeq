@@ -419,6 +419,34 @@ class TestInboundMedia:
 
         assert len(events) == 1
 
+    async def test_free_response_channel_dispatches_unaddressed_message(self):
+        adapter = make_adapter(channel="#general,#journal", free_response_channels="#Journal")
+        adapter._message_handler = object()
+        events = []
+
+        async def capture(event):
+            events.append(event)
+
+        adapter.handle_message = capture
+        await adapter._handle_line(":alice!a@host PRIVMSG #journal :went for a walk today")
+
+        assert len(events) == 1
+        assert events[0].text == "went for a walk today"
+        assert events[0].source.chat_id == "#journal"
+
+    async def test_unaddressed_message_outside_free_response_channels_ignored(self):
+        adapter = make_adapter(channel="#general,#journal", free_response_channels=["#journal"])
+        adapter._message_handler = object()
+        events = []
+
+        async def capture(event):
+            events.append(event)
+
+        adapter.handle_message = capture
+        await adapter._handle_line(":alice!a@host PRIVMSG #general :went for a walk today")
+
+        assert events == []
+
     async def test_unaddressed_channel_message_ignored(self):
         adapter = make_adapter()
         adapter._message_handler = object()
